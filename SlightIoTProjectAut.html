@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SlightHome</title>
+    <link rel="stylesheet" href="style.css">
+
+</head>
+
+<body>
+    <div class="container">
+        <h1 class="mb-16">SlightHome</h1>
+
+        <!-- ===== LOGIN (PALSU) ===== -->
+        <section id="view-login" class="card auth-wrap">
+            <h2 class="mb-12">Masuk</h2>
+            <input id="email" type="email" placeholder="Email" autocomplete="username" />
+            <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
+            <button class="btn primary" id="loginBtn">Login</button>
+            <div class="hint mt-16">Login <b>palsu</b> untuk demo: pengecekan email & password di browser (tanpa
+                Firebase Auth).</div>
+            <div id="loginErr" class="hint" style="color:var(--red);"></div>
+        </section>
+
+        <!-- ===== USER APP ===== -->
+        <section id="view-user" class="app hide">
+            <div class="topbar">
+                <div class="left">
+                    <div class="logo">SlightHome</div>
+                </div>
+                <div class="right" style="min-width:320px;">
+                    <button class="btn primary" id="u-toggleAllBtn" data-action="u-toggleAll">All ON</button>
+                    <span class="badge">Role: User</span>
+                    <button class="btn" id="u-logout">Logout</button>
+                </div>
+            </div>
+            <div class="body">
+                <aside class="sidebar">
+                    <nav class="side-nav" id="u-sideNav">
+                        <div class="side-link" data-view="dashboard">Dashboard</div>
+                        <div class="side-link" data-view="rooms">Rooms</div>
+                        <div class="side-link" data-view="schedules">Schedules</div>
+                    </nav>
+                </aside>
+                <main class="main">
+                    <div id="u-view"></div>
+                </main>
+            </div>
+        </section>
+
+        <!-- ===== ADMIN APP ===== -->
+        <section id="view-admin" class="app hide">
+            <div class="topbar">
+                <div class="left">
+                    <div class="logo">SlightHome</div>
+                </div>
+                <div class="right" style="min-width:320px;">
+                    <button class="btn primary" id="a-toggleAllBtn" data-action="a-toggleAll">All ON</button>
+                    <span class="badge">Role: Admin</span>
+                    <button class="btn" id="a-logout">Logout</button>
+                </div>
+            </div>
+            <div class="body">
+                <aside class="sidebar">
+                    <nav class="side-nav" id="a-sideNav">
+                        <div class="side-link" data-view="dashboard">Dashboard</div>
+                        <div class="side-link" data-view="rooms">Rooms</div>
+                        <div class="side-link" data-view="schedules">Schedules</div>
+                        <div class="side-link" data-view="log">Log</div>
+                    </nav>
+                </aside>
+                <main class="main">
+                    <div id="a-view"></div>
+                </main>
+            </div>
+        </section>
+    </div>
+
+    <!-- Firebase (app+database only) -->
+    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
+
+    <script>
+        const qs = s => document.querySelector(s);
+        const hidden = sel => qs(sel).classList.contains("hide");
+        const showOnly = id => { ["#view-login", "#view-user", "#view-admin"].forEach(sel => qs(sel).classList.add("hide")); qs(id).classList.remove("hide"); };
+        /* ================== CONFIG ================== */
+        const firebaseConfig = {
+            apiKey: "AIzaSyATsQWfMzeDSCW6GVB1y0uwHCgBgyjMtTA",
+            authDomain: "esp32-relay-control-01-793ca.firebaseapp.com",
+            projectId: "esp32-relay-control-01-793ca",
+            storageBucket: "esp32-relay-control-01-793ca.firebasestorage.app",
+            messagingSenderId: "579248370296",
+            appId: "1:579248370296:web:fffb7b5185b8747bce738d",
+            databaseURL: "https://esp32-relay-control-01-793ca-default-rtdb.asia-southeast1.firebasedatabase.app"
+        };
+        const DEVICE_ID = "ESP32-Relay-Control-01";  // samakan dgn firmware
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        // === AUTH (Firebase) ===
+        firebase.auth().setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+
+        showOnly("#view-login"); // opsional, aman dipasang
+
+        // Routing berbasis status login + role dari RTDB
+        firebase.auth().onAuthStateChanged(async (user) => {
+            if (!user) {
+                showOnly("#view-login");
+                return;
+            }
+            try {
+                // Ambil role dari RTDB (fallback: "user")
+                const snap = await db.ref(`users/${user.uid}/role`).get();
+                const role = snap.exists() ? (snap.val() || "user") : "user";
+
+                // Mulai subscribe data device
+                subscribeReported();
+                subscribeLegacyRelays();
+                subscribeRooms();
+                subscribeOnlineStatus();
+
+                // Tampilkan UI sesuai role
+                if (role === "admin") renderAdminBoot(user.email);
+                else renderUserBoot(user.email);
+            } catch (err) {
+                console.error(err);
+                showOnly("#view-login");
+                qs("#loginErr").textContent = "Gagal memuat role: " + (err?.message || err);
+            }
+        });
+
+        // === Login pakai Auth ===
+        qs("#loginBtn").addEventListener("click", async () => {
+            const email = qs("#email").value.trim().toLowerCase();
+            const pass = qs("#password").value;
+            qs("#loginErr").textContent = "";
+            try {
+                await firebase.auth().signInWithEmailAndPassword(email, pass);
+                // onAuthStateChanged akan meng-handle UI setelah login
+            } catch (e) {
+                qs("#loginErr").textContent = e.message || "Login gagal.";
+            }
+        });
+
+        // === Logout (user & admin) ===
+        const doLogout = async () => { try { await firebase.auth().signOut(); } catch (e) { } };
+
+        // === UI flags (hindari re-render saat drag slider) ===
+        const uiFlags = { userDimmerDragging: false };
+        window.addEventListener("pointerup", () => { uiFlags.userDimmerDragging = false; });
+
+        // === Refresh throttle ===
+        let _rafTick = null;
+        function refreshIfVisible() {
+            if (_rafTick) return;
+            _rafTick = requestAnimationFrame(() => {
+                _rafTick = null;
+                const u_on = !hidden("#view-user");
+                const a_on = !hidden("#view-admin");
+                if (u_on) {
+                    if (u_view === "dashboard") {
+                        if (uiFlags.userDimmerDragging) u_updateNav(); else renderUser();
+                    } else if (u_view === "rooms") { renderUser(); }
+                    else { u_updateNav(); }
+                }
+                if (a_on) {
+                    if (a_view === "dashboard" || a_view === "rooms" || a_view === "schedules") renderAdmin();
+                    else a_updateNav();
+                }
+            });
+        }
+
+
+        /* ================== CHANNELS / DEVICES CATALOG ================== */
+        const CHANNELS = {
+            lamp1: { label: "Lampu 1", type: "switch" },
+            lamp2: { label: "Lampu 2", type: "switch" },
+            dimmer: { label: "Dimmer", type: "dimmer" } // power + level
+        };
+        const RELAY_PATHS = {
+            lamp1: "/relay1", lamp2: "/relay2", dimmerPower: "/relay4", dimmerLevel: "/dimmerLevel"
+        };
+        const deviceLabel = k => CHANNELS[k]?.label || k;
+        const devicePowerState = k => (k === "lamp1") ? !!state.lamp1 : (k === "lamp2") ? !!state.lamp2 : (k === "dimmer") ? !!state.dimP : false;
+
+        /* ================== SHADOW PATH HELPERS ================== */
+        const dPath = k => `devices/${DEVICE_ID}/shadow/desired/${k}`;
+        const rPath = k => `devices/${DEVICE_ID}/shadow/reported/${k}`;
+        const state = { lamp1: false, lamp2: false, dimP: false, dimL: 0, online: false };
+
+        // ---- Subscriptions (shadow) ----
+        function subscribeReported() {
+            db.ref(rPath("lamp1")).on("value", s => { state.lamp1 = !!s.val(); refreshIfVisible(); });
+            db.ref(rPath("lamp2")).on("value", s => { state.lamp2 = !!s.val(); refreshIfVisible(); });
+            db.ref(rPath("dimmer/power")).on("value", s => { state.dimP = !!s.val(); refreshIfVisible(); });
+            db.ref(rPath("dimmer/level")).on("value", s => {
+                const v = s.val(); state.dimL = (typeof v === "number") ? v : state.dimL; refreshIfVisible();
+            });
+        }
+
+        // ---- Subscriptions (legacy /relayX) ----
+        function subscribeLegacyRelays() {
+            db.ref(RELAY_PATHS.lamp1).on("value", s => { const v = s.val(); if (typeof v === "boolean") { state.lamp1 = v; refreshIfVisible(); } });
+            db.ref(RELAY_PATHS.lamp2).on("value", s => { const v = s.val(); if (typeof v === "boolean") { state.lamp2 = v; refreshIfVisible(); } });
+            db.ref(RELAY_PATHS.dimmerPower).on("value", s => { const v = s.val(); if (typeof v === "boolean") { state.dimP = v; refreshIfVisible(); } });
+            db.ref(RELAY_PATHS.dimmerLevel).on("value", s => { const v = s.val(); if (typeof v === "number") { state.dimL = v; refreshIfVisible(); } });
+        }
+
+        // ---- ONLINE/OFFLINE status (device-level) ----
+        let _serverOffset = 0;  // ms
+        let _lastSeen = 0;      // ms (server timestamp)
+        const nowServerMs = () => Date.now() + (_serverOffset || 0);
+        function recomputeOnline() {
+            const was = state.online;
+            const ok = (_lastSeen > 0) && ((nowServerMs() - _lastSeen) <= 15000); // 15s
+            state.online = !!ok;
+            if (state.online !== was) refreshIfVisible();
+        }
+        function subscribeOnlineStatus() {
+            db.ref(".info/serverTimeOffset").on("value", s => { _serverOffset = s.val() || 0; recomputeOnline(); });
+            db.ref(`devices/${DEVICE_ID}/lastSeen`).on("value", s => { _lastSeen = s.val() || 0; recomputeOnline(); });
+            setInterval(recomputeOnline, 5000);
+        }
+
+        // ---- Writers ----
+        function setLamp(k, val) {
+            const on = !!val;
+            const ops = [db.ref(dPath(k)).set(on)];
+            if (k === "lamp1") ops.push(db.ref(RELAY_PATHS.lamp1).set(on));
+            if (k === "lamp2") ops.push(db.ref(RELAY_PATHS.lamp2).set(on));
+            return Promise.all(ops);
+        }
+        function toggleLamp(k) {
+            const current = (k === "lamp1") ? state.lamp1 : (k === "lamp2") ? state.lamp2 : false;
+            return setLamp(k, !current);
+        }
+        function setDimPower(on) {
+            const val = !!on;
+            return Promise.all([
+                db.ref(dPath("dimmer/power")).set(val),
+                db.ref(RELAY_PATHS.dimmerPower).set(val)
+            ]);
+        }
+        function setDimLevel(lv) {
+            lv = Math.max(0, Math.min(100, parseInt(lv || 0, 10)));
+            return Promise.all([
+                db.ref(dPath("dimmer/level")).set(lv),
+                db.ref(RELAY_PATHS.dimmerLevel).set(lv)
+            ]);
+        }
+        function allPower(on) {
+            const val = !!on;
+            return Promise.all([
+                db.ref(`devices/${DEVICE_ID}/shadow/desired`).update({ lamp1: val, lamp2: val, "dimmer/power": val }),
+                db.ref("/").update({
+                    [RELAY_PATHS.lamp1.slice(1)]: val,
+                    [RELAY_PATHS.lamp2.slice(1)]: val,
+                    [RELAY_PATHS.dimmerPower.slice(1)]: val
+                })
+            ]);
+        }
+
+        /* ================== ROOMS (Realtime) ================== */
+        let roomsMap = {}; let roomsSubscribed = false;
+        function subscribeRooms() {
+            if (roomsSubscribed) return; roomsSubscribed = true;
+            db.ref(`rooms/${DEVICE_ID}`).on("value", snap => { roomsMap = snap.val() || {}; refreshIfVisible(); });
+        }
+        function roomMembersKeys(room) { return Object.keys(room?.members || {}).filter(k => CHANNELS[k]); }
+        async function setRoomPower(roomId, on) {
+            const room = roomsMap[roomId]; if (!room) return;
+            const members = roomMembersKeys(room);
+            const ops = members.map(k => {
+                if (k === "dimmer") return setDimPower(on);
+                if (k === "lamp1" || k === "lamp2") return setLamp(k, on);
+                return Promise.resolve();
+            });
+            await Promise.all(ops);
+        }
+        async function deleteRoom(roomId) { await db.ref(`rooms/${DEVICE_ID}/${roomId}`).remove(); }
+        async function setMember(roomId, key, checked) {
+            const ref = db.ref(`rooms/${DEVICE_ID}/${roomId}/members/${key}`);
+            if (checked) await ref.set(true); else await ref.remove();
+        }
+        async function createRoom(name) {
+            const id = `room_${Date.now()}`;
+            await db.ref(`rooms/${DEVICE_ID}/${id}`).set({ name, members: {} });
+            return id;
+        }
+
+        // helpers
+        function pad2(n) { return String(n).padStart(2, '0'); }
+        function listEl(sel) { return document.querySelector(sel); }
+
+        /* ================== SCHEDULE LIST (stream) ================== */
+        function loadSchedules(container, opts) {
+            const ref = db.ref(`schedules/${DEVICE_ID}`);
+            ref.off(); container.innerHTML = "";
+            let initialized = false, hasAny = false;
+            const rowId = id => `sch-${id}`;
+            const rowHTML = (id, v) => {
+                const badge = v.enabled !== false ? '<span class="badge green">Aktif</span>' : '<span class="badge gray">Nonaktif</span>';
+                const desc = (v.target === "dimmer")
+                    ? `Dimmer • power=${v.power ? 'ON' : 'OFF'} • level=${v.level ?? 0}%`
+                    : `${(v.target || '-').toUpperCase()} → ${(v.action || '-').toUpperCase()}`;
+                return `
+      <div class="item" id="${rowId(id)}" data-id="${id}">
+        <div class="flex" style="min-width:0;">
+          <div class="nowrap">${v.time || "--"}</div>
+          <div>— ${desc} — days ${String(v.days || "[]")}</div>
+        </div>
+        <div class="flex">
+          ${badge}
+          ${opts.canRun ? `<button class="btn" data-sch="run">Run</button>` : ""}
+          ${opts.canToggle ? `<button class="btn" data-sch="toggle">${v.enabled !== false ? 'Nonaktifkan' : 'Aktifkan'}</button>` : ""}
+          ${opts.canDelete ? `<button class="btn red" data-sch="del">Hapus</button>` : ""}
+        </div>
+      </div>`;
+            };
+            ref.once("value", snap => { initialized = true; if (!snap.exists()) container.innerHTML = '<div class="item">Belum ada jadwal.</div>'; });
+            ref.on("child_added", snap => {
+                const v = snap.val() || {};
+                if (initialized && !hasAny) container.innerHTML = "";
+                hasAny = true;
+                const wrap = document.createElement("div"); wrap.innerHTML = rowHTML(snap.key, v);
+                container.appendChild(wrap.firstElementChild);
+            });
+            ref.on("child_changed", snap => {
+                const el = document.getElementById(rowId(snap.key)); if (!el) return;
+                const wrap = document.createElement("div"); wrap.innerHTML = rowHTML(snap.key, snap.val() || {});
+                el.replaceWith(wrap.firstElementChild);
+            });
+            ref.on("child_removed", snap => {
+                const el = document.getElementById(rowId(snap.key)); if (el) el.remove();
+                if (!container.children.length) container.innerHTML = '<div class="item">Belum ada jadwal.</div>';
+            });
+
+            container.onclick = async (e) => {
+                const btn = e.target.closest("button[data-sch]"); if (!btn) return;
+                const row = btn.closest(".item"); const id = row.dataset.id;
+                try {
+                    const val = (await db.ref(`schedules/${DEVICE_ID}/${id}`).get()).val() || {};
+                    if (btn.dataset.sch === "toggle") { await db.ref(`schedules/${DEVICE_ID}/${id}/enabled`).set(!(val.enabled !== false)); return; }
+                    if (btn.dataset.sch === "del") { if (confirm("Hapus jadwal ini?")) await db.ref(`schedules/${DEVICE_ID}/${id}`).remove(); return; }
+                    if (btn.dataset.sch === "run") {
+                        if (val.target === "all") { await allPower(val.action === "on"); }
+                        else if (val.target === "lamp1" || val.target === "lamp2") { await setLamp(val.target, val.action === "on"); }
+                        else if (val.target === "dimmer") { if (typeof val.level === "number") await setDimLevel(val.level); await setDimPower(val.power !== false); }
+                    }
+                } catch (err) { console.error(err); alert("Gagal mengeksekusi aksi jadwal:\n" + (err?.message || err)); }
+            };
+        }
+
+        /* ================== USER VIEW ================== */
+        let u_view = "dashboard";
+        function renderUserBoot(email) {
+            showOnly("#view-user");
+            qs("#u-logout").onclick = doLogout;
+            qs("#u-sideNav").onclick = e => { const v = e.target.dataset.view; if (!v) return; u_view = v; u_updateNav(); renderUser(); };
+            qs("#u-toggleAllBtn").onclick = async () => {
+                const allOn = state.lamp1 && state.lamp2 && state.dimP; await allPower(!allOn);
+            };
+            u_updateNav(); renderUser();
+        }
+        function u_updateNav() {
+            document.querySelectorAll("#u-sideNav .side-link").forEach(el => el.classList.toggle("active", el.dataset.view === u_view));
+            const btn = qs("#u-toggleAllBtn"); const allOn = state.lamp1 && state.lamp2 && state.dimP; btn.textContent = allOn ? "All OFF" : "All ON";
+        }
+        function renderUser() {
+            const root = qs("#u-view");
+            root.onclick = root.oninput = root.onchange = root.onpointerdown = null;
+
+            if (u_view === "dashboard") {
+                // Dashboard lama + badge Online/Offline per-bar
+                const rows = [
+                    { key: "lamp1", name: "Lampu 1", power: state.lamp1, dimmable: false },
+                    { key: "lamp2", name: "Lampu 2", power: state.lamp2, dimmable: false },
+                    { key: "dimmer", name: "Dimmer", power: state.dimP, dimmable: true, level: state.dimL }
+                ].map(d => {
+                    const dimHTML = d.dimmable
+                        ? `<input type="range" class="range" min="0" max="100" step="1" value="${d.level || 0}" data-u-dim="level">
+               <span class="badge" data-role="level-r">${d.level || 0}%</span>`
+                        : `<span class="badge gray">Non-dimmer</span>`;
+                    const tLabel = d.power ? "OFF" : "ON";
+                    return `
+          <div class="lamp-row" data-dev="${d.key}">
+            <div class="lamp-col" style="min-width:200px;">
+              <strong>${d.name}</strong>
+              <span class="badge ${d.power ? 'blue' : ''}" data-role="pwr">${d.power ? 'ON' : 'OFF'}</span>
+              ${d.dimmable ? `<span class="badge" data-role="level-l">${d.level || 0}%</span>` : ``}
+              <span class="badge ${state.online ? 'green' : 'red'}">${state.online ? 'Online' : 'Offline'}</span>
+            </div>
+            <div class="lamp-col">
+              ${dimHTML}
+              <button class="btn" data-u-act="toggle">${tLabel}</button>
+            </div>
+          </div>`;
+                }).join("");
+                root.innerHTML = `<h2 class="section-title">Dashboard</h2><div class="list">${rows}</div>`;
+
+                // Toggle
+                root.onclick = async (e) => {
+                    const t = e.target;
+                    if (t.dataset.uAct === "toggle") {
+                        const wrap = t.closest(".lamp-row"); const dev = wrap?.dataset.dev;
+                        try {
+                            if (dev === "lamp1" || dev === "lamp2") await toggleLamp(dev);
+                            else if (dev === "dimmer") await setDimPower(!state.dimP);
+                        } catch (err) { console.error(err); alert("Gagal mengubah status:\n" + (err?.message || err)); }
+                    }
+                };
+
+                // Slider debounce
+                let dimCommitTimer = null; let dimPendingVal = null; const DIM_DEBOUNCE = 120;
+                root.onpointerdown = (e) => {
+                    if (e.target.matches('input[type="range"][data-u-dim="level"]')) uiFlags.userDimmerDragging = true;
+                };
+                root.oninput = (e) => {
+                    const t = e.target;
+                    if (t.matches('input[type="range"][data-u-dim="level"]')) {
+                        const v = parseInt(t.value, 10) || 0;
+                        const wrap = t.closest(".lamp-row");
+                        const right = t.nextElementSibling;
+                        const left = wrap?.querySelector('[data-role="level-l"]');
+                        if (right) right.textContent = v + "%";
+                        if (left) left.textContent = v + "%";
+                        dimPendingVal = v;
+                        if (dimCommitTimer) clearTimeout(dimCommitTimer);
+                        dimCommitTimer = setTimeout(() => { const vv = dimPendingVal; dimPendingVal = null; setDimLevel(vv).catch(() => { }); }, DIM_DEBOUNCE);
+                    }
+                };
+                root.onchange = (e) => {
+                    const t = e.target;
+                    if (t.matches('input[type="range"][data-u-dim="level"]')) {
+                        const v = parseInt(t.value, 10) || 0;
+                        if (dimCommitTimer) { clearTimeout(dimCommitTimer); dimCommitTimer = null; }
+                        setDimLevel(v).catch(() => { });
+                        uiFlags.userDimmerDragging = false;
+                    }
+                };
+            }
+
+            if (u_view === "rooms") {
+                const entries = Object.entries(roomsMap).sort((a, b) => (a[1]?.name || '').localeCompare(b[1]?.name || ''));
+                const cards = entries.map(([id, r]) => {
+                    const members = roomMembersKeys(r);
+                    const chips = members.length ? members.map(k => {
+                        const on = devicePowerState(k);
+                        return `<span class="badge ${on ? 'blue' : ''}">${deviceLabel(k)} ${on ? 'ON' : 'OFF'}</span>`;
+                    }).join(' ') : '<span class="hint">Belum ada lampu</span>';
+                    return `
+          <div class="card mb-16" data-room="${id}">
+            <div class="flex" style="justify-content:space-between;margin-bottom:8px;">
+              <div class="flex">
+                <div class="section-title" style="margin:0;">${r.name || '(Tanpa Nama)'}</div>
+                <span class="badge">Lampu: ${members.length}</span>
+              </div>
+              <div class="flex">
+                <button class="btn green" data-u-room="${id}" data-u-roomact="on">ON</button>
+                <button class="btn red" data-u-room="${id}" data-u-roomact="off">OFF</button>
+              </div>
+            </div>
+            <div class="flex">
+              ${chips}
+              <span class="badge ${state.online ? 'green' : 'red'}">${state.online ? 'Online' : 'Offline'}</span>
+            </div>
+          </div>`;
+                }).join('');
+                qs("#u-view").innerHTML = `<h2 class="section-title">Rooms</h2>${cards || '<div class="card">Belum ada room. (Hubungi admin)</div>'}`;
+                qs("#u-view").onclick = async (e) => {
+                    const t = e.target; if (!t.dataset.uRoomact) return;
+                    const roomId = t.dataset.uRoom;
+                    try { await setRoomPower(roomId, t.dataset.uRoomact === "on"); }
+                    catch (err) { console.error(err); alert("Gagal set room power:\n" + (err?.message || err)); }
+                };
+            }
+
+            if (u_view === "schedules") {
+                qs("#u-view").innerHTML = `<h2 class="section-title">Schedules</h2><div id="u-schedList" class="list"><div class="item">Memuat...</div></div>`;
+                requestAnimationFrame(() => { loadSchedules(listEl("#u-schedList"), { canToggle: true, canRun: false, canDelete: false, canEdit: false }); });
+            }
+            u_updateNav();
+        }
+
+        /* ================== ADMIN VIEW ================== */
+        let a_view = "rooms";
+        const a_log = [];
+        function log(msg) { a_log.unshift({ ts: Date.now(), msg }); if (a_log.length > 300) a_log.length = 300; if (a_view === "log") renderAdmin(); }
+
+        function renderAdminBoot(email) {
+            showOnly("#view-admin");
+            qs("#a-logout").onclick = doLogout
+            qs("#a-sideNav").onclick = e => { const v = e.target.dataset.view; if (!v) return; a_view = v; a_updateNav(); renderAdmin(); };
+            qs("#a-toggleAllBtn").onclick = async () => {
+                const allOn = state.lamp1 && state.lamp2 && state.dimP; await allPower(!allOn); log(`All ${!allOn ? 'ON' : 'OFF'} dipanggil admin`);
+            };
+            a_updateNav(); renderAdmin();
+        }
+        function a_updateNav() {
+            document.querySelectorAll("#a-sideNav .side-link").forEach(el => el.classList.toggle("active", el.dataset.view === a_view));
+            const btn = qs("#a-toggleAllBtn"); const allOn = state.lamp1 && state.lamp2 && state.dimP; btn.textContent = allOn ? "All OFF" : "All ON";
+        }
+        function renderAdmin() {
+            const root = qs("#a-view");
+
+            if (a_view === "dashboard") {
+                const total = 3, on = [state.lamp1, state.lamp2, state.dimP].filter(Boolean).length, dimm = 1;
+                root.innerHTML = `
+        <h2 class="section-title">Ringkasan</h2>
+        <div class="list">
+          <div class="item"><div>Total Lampu</div><div><strong>${total}</strong></div></div>
+          <div class="item"><div>Menyala</div><div><strong>${on}</strong></div></div>
+          <div class="item"><div>Lampu dimmer</div><div><strong>${dimm}</strong></div></div>
+        </div>`;
+            }
+
+            if (a_view === "rooms") {
+                const entries = Object.entries(roomsMap).sort((a, b) => (a[1]?.name || '').localeCompare(b[1]?.name || ''));
+                const roomCards = entries.map(([id, r]) => {
+                    const members = roomMembersKeys(r);
+                    const memberCheckboxes = Object.keys(CHANNELS).map(k => {
+                        const checked = r.members && r.members[k] ? 'checked' : '';
+                        return `<label class="flex" style="gap:6px;">
+              <input type="checkbox" data-room-id="${id}" data-room-mem="${k}" ${checked}> ${deviceLabel(k)}
+            </label>`;
+                    }).join('');
+                    const chips = members.length ? members.map(k => {
+                        const on = devicePowerState(k);
+                        return `<span class="badge ${on ? 'blue' : ''}">${deviceLabel(k)} ${on ? 'ON' : 'OFF'}</span>`;
+                    }).join(' ') : '<span class="hint">Belum ada lampu</span>';
+                    return `
+          <div class="card mb-16" data-room="${id}">
+            <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <div class="flex">
+                <div class="section-title" style="margin:0;">${r.name || '(Tanpa Nama)'}</div>
+                <span class="badge">Lampu: ${members.length}</span>
+              </div>
+              <div class="flex">
+                <button class="btn green" data-rooms-act="on" data-room-id="${id}">ON</button>
+                <button class="btn red" data-rooms-act="off" data-room-id="${id}">OFF</button>
+                <button class="btn" data-room-del="${id}" title="Hapus room">Hapus</button>
+              </div>
+            </div>
+            <div class="mb-8">Anggota saat ini:</div>
+            <div class="flex mb-12">
+              ${chips}
+              <span class="badge ${state.online ? 'green' : 'red'}">${state.online ? 'Online' : 'Offline'}</span>
+            </div>
+            <div class="mb-8">Kelola lampu di room ini:</div>
+            <div class="flex" style="gap:16px;">${memberCheckboxes}</div>
+          </div>`;
+                }).join('');
+
+                root.innerHTML = `
+        <h2 class="section-title">Rooms (Admin)</h2>
+        <div class="card mb-16">
+          <div class="flex" style="gap:8px;align-items:center;">
+            <input id="roomName" class="input" placeholder="Nama room (mis. Ruang Tamu)" style="flex:1;min-width:200px;">
+            <button class="btn primary" id="btnCreateRoom">Buat Room</button>
+          </div>
+          <div class="hint mt-16">Setelah room dibuat, centang lampu yang ingin dimasukkan ke room tersebut.</div>
+        </div>
+        ${roomCards || '<div class="card">Belum ada room. Buat room baru di atas.</div>'}`;
+
+                const createBtn = qs("#btnCreateRoom");
+                if (createBtn) {
+                    createBtn.onclick = async () => {
+                        const name = (qs("#roomName").value || "").trim();
+                        if (!name) { alert("Nama room tidak boleh kosong."); return; }
+                        try { await createRoom(name); qs("#roomName").value = ""; log(`Buat room: ${name}`); }
+                        catch (err) { console.error(err); alert("Gagal membuat room:\n" + (err?.message || err)); }
+                    };
+                }
+
+                root.onclick = async (e) => {
+                    const t = e.target;
+                    if (t.dataset.roomsAct) {
+                        try { await setRoomPower(t.dataset.roomId, t.dataset.roomsAct === "on"); log(`Room ${t.dataset.roomId} ${t.dataset.roomsAct.toUpperCase()}`); }
+                        catch (err) { console.error(err); alert("Gagal set power room:\n" + (err?.message || err)); }
+                        return;
+                    }
+                    if (t.dataset.roomDel) {
+                        if (confirm("Hapus room ini?")) {
+                            try { await deleteRoom(t.dataset.roomDel); log(`Hapus room ${t.dataset.roomDel}`); }
+                            catch (err) { console.error(err); alert("Gagal hapus room:\n" + (err?.message || err)); }
+                        }
+                    }
+                };
+                root.onchange = async (e) => {
+                    const inp = e.target;
+                    if (inp.matches('input[type="checkbox"][data-room-mem]')) {
+                        const roomId = inp.dataset.roomId, key = inp.dataset.roomMem;
+                        try { await setMember(roomId, key, inp.checked); log(`Room ${roomId}: ${inp.checked ? 'tambah' : 'hapus'} ${key}`); }
+                        catch (err) { console.error(err); alert("Gagal mengubah anggota room:\n" + (err?.message || err)); inp.checked = !inp.checked; }
+                    }
+                };
+            }
+
+            if (a_view === "schedules") {
+                root.innerHTML = `
+        <div class="grid" style="grid-template-columns:1fr 1fr;">
+          <div>
+            <h2 class="section-title">Schedules</h2>
+            <div id="a-schedList" class="list"><div class="item">Memuat...</div></div>
+          </div>
+          <div>
+            <h2 class="section-title">Tambah Jadwal</h2>
+            <div class="card">
+              <div class="mb-12"><input id="schLabel" class="input" placeholder="Label (opsional)" /></div>
+              <div class="mb-12">
+                <div class="mb-8">Waktu (24 jam)</div>
+                <div class="flex" style="align-items:center;gap:8px;">
+                  <input id="schH" class="input" type="number" min="0" max="23" step="1" value="0" style="width:80px;text-align:center;" />
+                  <div style="font-weight:700;">:</div>
+                  <input id="schM" class="input" type="number" min="0" max="59" step="1" value="0" style="width:80px;text-align:center;" />
+                  <span class="badge" id="schHmBadge">00:00</span>
+                </div>
+                <div id="schTimeErr" class="hint" style="color:#dc3545;"></div>
+              </div>
+              <div class="mb-12">
+                <div class="mb-8">Hari</div>
+                <div id="schDaysChips" class="flex" style="gap:6px;flex-wrap:wrap;"></div>
+                <div class="flex mt-16" style="gap:8px;">
+                  <select id="schDayPicker" class="select" style="max-width:260px;">
+                    <option value="" selected>Pilih hari…</option>
+                    <option value="all">— Semua hari —</option>
+                    <option value="1">Senin</option><option value="2">Selasa</option><option value="3">Rabu</option>
+                    <option value="4">Kamis</option><option value="5">Jumat</option><option value="6">Sabtu</option><option value="7">Minggu</option>
+                  </select>
+                  <button class="btn" id="schDaysClear">Bersihkan</button>
+                </div>
+                <div class="hint">Pilih hari dari dropdown; yang terpilih muncul sebagai chip di atas.</div>
+              </div>
+              <div class="mb-12">
+                <div class="mb-8">Target</div>
+                <select id="schTarget" class="select">
+                  <option value="all">All</option>
+                  <option value="lamp1">Lampu 1</option>
+                  <option value="lamp2">Lampu 2</option>
+                  <option value="dimmer">Dimmer</option>
+                </select>
+              </div>
+              <div id="schActionWrap" class="mb-12">
+                <div class="mb-8">Aksi</div>
+                <select id="schAction" class="select"><option value="on">ON</option><option value="off">OFF</option></select>
+              </div>
+              <div id="schDimWrap" class="mb-12" style="display:none;">
+                <div class="mb-8">Dimmer</div>
+                <div class="flex"><label class="flex"><input type="checkbox" id="schDimPower" checked> Power ON</label></div>
+                <div class="flex mt-16" style="align-items:center;gap:10px;">
+                  <input type="range" id="schDimLevel" class="range" min="0" max="100" value="50">
+                  <span class="badge" id="schDimBadge">50%</span>
+                </div>
+              </div>
+              <div class="flex" style="justify-content:flex-end;">
+                <button class="btn" id="schResetBtn">Reset</button>
+                <button class="btn primary" id="schAddBtn" disabled>Tambah</button>
+              </div>
+            </div>
+          </div>
+        </div>`;
+
+                const DAY_NAMES = { 1: 'Senin', 2: 'Selasa', 3: 'Rabu', 4: 'Kamis', 5: 'Jumat', 6: 'Sabtu', 7: 'Minggu' };
+                const targetSel = qs("#schTarget"), actWrap = qs("#schActionWrap"), dimWrap = qs("#schDimWrap");
+                const dimSlider = qs("#schDimLevel"), dimBadge = qs("#schDimBadge");
+                const schH = qs("#schH"), schM = qs("#schM"), timeErr = qs("#schTimeErr"), addBtn = qs("#schAddBtn");
+                const timeBadge = qs("#schHmBadge");
+                const dayPicker = qs("#schDayPicker"), chipsWrap = qs("#schDaysChips"), btnClearDays = qs("#schDaysClear");
+                let selectedDays = new Set();
+
+                function clampNumberInput(el) { const min = parseInt(el.min, 10), max = parseInt(el.max, 10); let v = parseInt(el.value, 10); if (Number.isNaN(v)) v = min; v = Math.max(min, Math.min(max, v)); el.value = v; }
+                function updateTimeValidity() { clampNumberInput(schH); clampNumberInput(schM); const hh = +schH.value, mm = +schM.value; const ok = (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59); timeErr.textContent = ok ? "" : "Waktu tidak valid (00–23 : 00–59)"; return ok; }
+                function updateTimeBadge() { const hh = +schH.value || 0, mm = +schM.value || 0; timeBadge.textContent = `${pad2(hh)}:${pad2(mm)}`; }
+                function updateAddBtn() { const ok = updateTimeValidity(); updateTimeBadge(); addBtn.disabled = !(ok && selectedDays.size > 0); }
+                function renderDaysChips() {
+                    if (!selectedDays.size) { chipsWrap.innerHTML = '<span class="hint">Belum ada hari dipilih</span>'; }
+                    else {
+                        chipsWrap.innerHTML = [...selectedDays].sort((a, b) => a - b).map(d => (
+                            `<span class="badge">${DAY_NAMES[d]} <button data-delday="${d}" title="Hapus" style="border:0;background:transparent;cursor:pointer;margin-left:6px;font-weight:700;">×</button></span>`
+                        )).join('');
+                    }
+                    updateAddBtn();
+                }
+                targetSel.onchange = () => { const t = targetSel.value; actWrap.style.display = (t === "dimmer") ? "none" : "block"; dimWrap.style.display = (t === "dimmer") ? "block" : "none"; };
+                dimSlider.oninput = () => { dimBadge.textContent = (parseInt(dimSlider.value, 10) || 0) + "%"; };
+                ["input", "change", "blur"].forEach(ev => { schH.addEventListener(ev, updateAddBtn); schM.addEventListener(ev, updateAddBtn); });
+                dayPicker.onchange = () => { const v = dayPicker.value; if (!v) return; if (v === "all") selectedDays = new Set([1, 2, 3, 4, 5, 6, 7]); else selectedDays.add(parseInt(v, 10)); dayPicker.value = ""; renderDaysChips(); };
+                btnClearDays.onclick = () => { selectedDays.clear(); renderDaysChips(); };
+                root.addEventListener?.("click", (e) => { const d = e.target.dataset.delday; if (d) { selectedDays.delete(parseInt(d, 10)); renderDaysChips(); } });
+                qs("#schResetBtn").onclick = () => { qs("#schLabel").value = ""; schH.value = "0"; schM.value = "0"; selectedDays = new Set(); targetSel.value = "all"; targetSel.onchange(); qs("#schAction").value = "on"; qs("#schDimPower").checked = true; dimSlider.value = 50; dimBadge.textContent = "50%"; renderDaysChips(); updateTimeBadge(); };
+                qs("#schAddBtn").onclick = async () => {
+                    if (addBtn.disabled) return;
+                    try {
+                        const hh = +schH.value, mm = +schM.value; const time = `${pad2(hh)}:${pad2(mm)}`;
+                        const days = [...selectedDays].sort((a, b) => a - b); if (!days.length) { alert("Pilih minimal satu hari"); return; }
+                        const daysStr = "[" + days.join(",") + "]"; const label = (qs("#schLabel").value || "").trim(); const target = targetSel.value;
+                        const payload = { time, days: daysStr, target, enabled: true };
+                        if (target === "dimmer") { payload.power = !!qs("#schDimPower").checked; payload.level = parseInt(qs("#schDimLevel").value, 10) || 0; }
+                        else { payload.action = qs("#schAction").value; }
+                        const id = `sch_${Date.now()}`; await db.ref(`schedules/${DEVICE_ID}/${id}`).set(payload); log(`Tambah jadwal: ${label || id} (${time})`);
+                    } catch (err) { console.error(err); alert("Gagal menambah jadwal:\n" + (err?.message || err)); }
+                };
+
+                targetSel.onchange(); renderDaysChips(); updateTimeBadge();
+                requestAnimationFrame(() => { loadSchedules(listEl("#a-schedList"), { canToggle: true, canRun: true, canDelete: true, canEdit: false }); });
+            }
+
+            if (a_view === "log") {
+                const rows = a_log.map(l => `<div class="item"><div>${new Date(l.ts).toLocaleTimeString()} — ${l.msg}</div></div>`).join("") || '<div class="item">Belum ada aktivitas.</div>';
+                root.innerHTML = `
+        <h2 class="section-title">Activity Log</h2>
+        <div class="flex" style="justify-content:flex-end;margin-bottom:8px;"><button class="btn red" id="logClear">Clear</button></div>
+        <div class="list">${rows}</div>`;
+                qs("#logClear").onclick = () => { a_log.length = 0; renderAdmin(); };
+            }
+            a_updateNav();
+        }
+
+    </script>
+</body>
+
+</html>
